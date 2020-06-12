@@ -1,11 +1,66 @@
 #!/usr/bin/env python
 # coding: utf-8
 
+# **Requisitos**
+# - modelo (h5)
+# - labeled data (training and testing sentences *.p)
+# - NYT corpus (*.metadata *.text *.lemmas.p)
+# - outputfolder (where to store the *.events.p)
+# - modules.ed ( the ed.py script where to recover the model)
+
 # In[1]:
 
 
-import os
+import sys
+import sys, getopt
 from datetime import datetime
+
+
+argv = sys.argv[1:]
+try:
+    opts, args = getopt.getopt(argv,"",["data_path=",
+                                        "destination_path=",
+                                        "labeled_data_path=",
+                                        "model_path="
+                                       ])
+    
+    for opt, arg in opts:
+        if opt == "--data_path":
+            data_path = arg
+        if opt == "--destination_path":
+            destination_path = arg
+        if opt == "--labeled_data_path":
+            labeled_data_path = arg
+        if opt == "--model_path":
+            model_path = arg
+
+            
+            
+except getopt.GetoptError:
+
+    print(f'{datetime.now()} [WARNING] Bad or missing parameters. Defined to default:')
+
+    
+    # Data location
+    # data root where search for the *.metadata, *.text, *.lemmas.p. 
+    data_path = '/mnt/work/maiso/datasets/NYT'
+    # data folder where put the *.events.p files
+    destination_path = '/mnt/work/maiso/datasets/output'
+    
+    labeled_data_path='/mnt/work/maiso/python3.workspace/Causality/data/ed/'
+    model_path = '/mnt/work/maiso/python3.workspace/Causality/models/best_model_15.h5'
+    
+print(f'{datetime.now()} [ INFO  ] Using {data_path} as the root data path.')
+print(f'{datetime.now()} [ INFO  ] Using {destination_path} as the destination folder.')
+print()
+print(f'{datetime.now()} [ INFO  ] Using {labeled_data_path} as the root labeled data path.')
+print(f'{datetime.now()} [ INFO  ] Using {model_path} as the model data path.')
+
+
+# In[2]:
+
+
+import os
 #BERT
 import torch
 from pytorch_pretrained_bert import BertTokenizer
@@ -17,14 +72,6 @@ import re
 import threading
 
 print(f'{datetime.now()} [ INFO  ] Finished imports, starting program.')
-
-
-# In[2]:
-
-
-# Data location
-data_path = '/mnt/work/maiso/datasets/NYT'
-print(f'{datetime.now()} [ INFO  ] Using {data_path} as the root data path.')
 
 
 # In[3]:
@@ -64,7 +111,7 @@ if events_count>0:
     print(f'{datetime.now()} [WARNING] Some files are goint to be overwritten (*.events.p)')
 
 
-# In[5]:
+# In[4]:
 
 
 print(f'{datetime.now()} [ INFO  ] Loading BERT class')
@@ -79,15 +126,31 @@ class BERT_Embeddings(object):
 
 
     def get_BERT_Embeddings(self,text, tokens):
+
+            
         matrix = np.zeros(shape=(1,len(tokens),768)) # 768 last 4 layer added.
+        
+
+
 
         tokenized_text = ['[CLS]']
         
-        for ini,fin in tokens:
+        for idx, (ini,fin) in enumerate(tokens):
             word_tokens = self.tokenizer.tokenize(text[ini:fin])
-            tokenized_text +=word_tokens
-        tokenized_text += ['[SEP]']
+
+            if len(word_tokens)+len(tokenized_text)+1 >512: #if sentence too long exclude some tokens
+                break 
+                
+            tokenized_text += word_tokens
         
+        # truncate sentence if is longer than 512 (BERT model can't handle more than 512)
+        # if sentence too long exclude some tokens (the vectors of those tokens will be zero)
+        tokens = tokens[:idx]
+
+            
+        tokenized_text += ['[SEP]']
+
+            
         indexed_tokens = self.tokenizer.convert_tokens_to_ids(tokenized_text)
         segments_ids = [1] * len(tokenized_text)
 
@@ -142,24 +205,27 @@ print(f'{datetime.now()} [ INFO  ] BERT class loaded.')
 
 # **We need the entity vocab for the next step. We first load model and vocab**
 
-# In[ ]:
+# In[5]:
 
 
-from modules.ed import get_data, load_model_from_disk, Generator, train_val_split, train_model, get_model, sensitivity, specificity, f1_score
+import warnings
+with warnings.catch_warnings():
+    warnings.filterwarnings("ignore",category=DeprecationWarning)
+    warnings.filterwarnings("ignore",category=FutureWarning)
+    from modules.ed import get_data, load_model_from_disk, Generator, train_val_split, train_model, get_model, sensitivity, specificity, f1_score
 
 
-# In[7]:
+# In[6]:
 
 
-from modules.ed import get_data, load_model_from_disk, Generator, train_val_split, train_model, get_model, sensitivity, specificity, f1_score
+#from modules.ed import get_data, load_model_from_disk, Generator, train_val_split, train_model, get_model, sensitivity, specificity, f1_score
 
-data_path='/mnt/work/maiso/python3.workspace/Causality/data/ed/'
-model_path = '/mnt/work/maiso/python3.workspace/Causality/models/best_model_15.h5'
 
-print(f'{datetime.now()} [ INFO  ] Loading data from files (testing_sents.p and training_sents.p) on folder: {data_path}')
+
+print(f'{datetime.now()} [ INFO  ] Loading data from files (testing_sents.p and training_sents.p) on folder: {labeled_data_path}')
       
     
-x, y, ent2index = get_data(data_path)
+x, y, ent2index = get_data(labeled_data_path)
 train_data, val_data = train_val_split((x,y))
 
 print(f'{datetime.now()} [ INFO  ] Loading model from: {model_path}')
@@ -184,7 +250,7 @@ for metric,value in zip(model.metrics_names, rta):
     print('{}: {:5.4f}'.format(metric, value))
 
 
-# In[21]:
+# In[7]:
 
 
 # Inputs: 
@@ -195,6 +261,10 @@ bert = BERT_Embeddings()
 # model_lock = threading.Lock()
 tuplas_re = re.compile('\(([0-9]*?), ([0-9]*?)\)')
 entities_re = re.compile("'([^']*)'")
+path_re = re.compile('([0-9]{4}/[0-9]{2}/[0-9]{2}/.*)\.metadata')
+
+#Matches any character which is not a word character.
+words_re = re.compile('\w')
 
 print(f'{datetime.now()} [ INFO  ] Loading BERT model.')
 print(f'{datetime.now()} [ INFO  ] BERT model loaded.')
@@ -223,6 +293,8 @@ def process_file(file):
     idx = 0
     old_idx = 0
     sent_idx=0
+    events = []
+
     for ini,fin in sentences:
         while idx<len(tokens) and tokens[idx][0]<fin:
             idx+=1
@@ -231,7 +303,7 @@ def process_file(file):
         entities_in_sentence = entities[old_idx:idx]
         old_idx = idx
 
-#         with bert_lock:
+
         xbert = bert.get_BERT_Embeddings(text, tokens_in_sentence )
 
         xsentbert = np.average(xbert, axis=1) *np.ones(shape=(1,len(xbert[0,:,0]),768))
@@ -245,32 +317,43 @@ def process_file(file):
                 xents[0,idx] = ent2index['[PAD]']
 
         x = [xbert, xsentbert, xents]
-#         with model_lock:
+
         y_pred = model.predict(x)
-        events = []
 
         for j in range(len(tokens_in_sentence)):
             pred = y_pred[0,j,0]
-            if pred>0.5:
+            token = tokens_in_sentence[j]
+
+            if pred>0.5 and len(words_re.findall(text[token[0]:token[1]]))>0: # event with some word/letter
                 bert_vec = xbert[0,j,:]
-                token = tokens_in_sentence[j]
 
 
                 event = {
                     'file_id':id_,
                     'trigger': text[token[0]:token[1]],
+                    'token': (token[0],token[1]),
                     'idx': sent_idx,
-                    'bert': bert_vec,
+#                     'bert': bert_vec,
                     'conf': pred,
                     'lemma': lemmas_in_sentence[j],
                     'date': date
                 }
                 events.append(event)
+                
         sent_idx+=1
 
-        pickle.dump(events ,open(file[:-9]+'.events.p', 'wb' ))
-    return file
+    # extracting YYYY/MM/DD/file_name (without .metadatata)
+    # joinint ( destination_path + YYYY/MM/DDfile_name + .events.p)
+    event_file = os.path.join(destination_path, path_re.findall(file)[0]+'.events.p')
+    
+    # creating destination_path + YYYY/MM/DD folders
+    folder = '/'.join(event_file.split('/')[:-1])
+    if not os.path.exists(folder):
+        os.makedirs(folder)
 
+
+    pickle.dump(events ,open(event_file, 'wb' ))
+#     return events
 
 
 print(f'{datetime.now()} [ INFO  ] process_file defined. Uses: metadata, lemmas and text for building the event.p files.')
@@ -280,6 +363,9 @@ print(f'{datetime.now()} [ INFO  ] process_file defined. Uses: metadata, lemmas 
 
 
 import concurrent.futures
+
+# files = files[:2000]
+# print(f'{datetime.now()} [WARNING]  Se están usando menos archivos.')
 
 max_workers=16 
 chunksize = int(len(files)/(max_workers))
